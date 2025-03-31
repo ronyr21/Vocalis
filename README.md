@@ -448,7 +448,7 @@ sequenceDiagram
     participant Backend as FastAPI Backend
     participant IntHandler as Backend Interrupt Handler
     participant LLM as LLM API (LM Studio)
-    participant TTS as TTS API (Orpheus)
+    participant TTS as TTS API (Orpheus-FASTAPI)
     
     Note over Frontend,TTS: Normal Speech Flow
     
