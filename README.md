@@ -2,7 +2,7 @@
 
 # Vocalis
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![React](https://img.shields.io/badge/React-18-61DAFB.svg?logo=react&logoColor=white)](https://reactjs.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.109.2-009688.svg?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
 [![Whisper](https://img.shields.io/badge/Whisper-Faster--Whisper-yellow.svg)](https://github.com/guillaumekln/faster-whisper)
@@ -666,7 +666,7 @@ web-audio-api
 
 ## Technical Decisions
 
-- **Audio Format**: Native WebRTC audio (typically 48kHz, 16-bit PCM)
+- **Audio Format**: Native WebRTC audio (44.1kHz, 16-bit PCM)
 - **Browser Compatibility**: Targeting modern Chrome browsers
 - **Error Handling**: Graceful degradation with user-friendly messages
 - **Microphone Permissions**: Standard browser permission flow with clear guidance
@@ -676,4 +676,4 @@ web-audio-api
 
 ## License
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+This project is licensed under the Apache License 2.0 - see the LICENSE file for details.
