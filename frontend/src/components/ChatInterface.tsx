@@ -175,8 +175,14 @@ const ChatInterface: React.FC = () => {
     
     // Handle transcription results
     const handleTranscription = (data: any) => {
-      setAssistantState('processing');
       setTranscript(data.text);
+    
+      if (!data.text.trim()) {
+        console.log("Empty transcript received, returning to idle");
+        setAssistantState('idle');
+      } else {
+        setAssistantState('processing');
+      }
     };
     
     // Handle LLM response
@@ -390,11 +396,11 @@ const ChatInterface: React.FC = () => {
       }
       
       // Adjust delay based on tier for a more natural conversation cadence
-      // 4.5-8s for first follow-up, longer for subsequent ones
-      const minDelay = 4500 + (followUpTier * 1500); // 4.5s -> 6s -> 7.5s
-      const maxDelay = 8000 + (followUpTier * 1000); // 8s -> 9s -> 10s
+      // Shorter delays for more responsive follow-ups
+      const minDelay = 2000 + (followUpTier * 1000); // 2s -> 3s -> 4s
+      const maxDelay = 2500 + (followUpTier * 1200); // 2.5s -> 3.7s -> 4.9s
       const randomDelay = Math.floor(Math.random() * (maxDelay - minDelay + 1)) + minDelay;
-      
+
       console.log(`Setting silent follow-up timer for ${randomDelay}ms (tier ${followUpTier + 1})`);
       
       // Create new timer

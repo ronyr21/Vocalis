@@ -247,8 +247,22 @@ class WebSocketManager:
             # Skip LLM and TTS if transcription is empty
             if not transcript.strip():
                 logger.info("Empty transcription, skipping LLM and TTS")
-                return
-            
+                
+                # Notify frontend that transcription occurred (even if it's just "...") to let it reset
+                await websocket.send_json({
+                    "type": MessageType.TRANSCRIPTION,
+                    "text": transcript,
+                    "metadata": {},
+                    "timestamp": datetime.now().isoformat()
+                })
+
+                # Still send TTS_END to fully reset UI
+            await websocket.send_json({
+                "type": MessageType.TTS_END,
+                "timestamp": datetime.now().isoformat()
+            })
+            return
+                
             # Get LLM response
             await self._send_status(websocket, "processing_llm", {})
             llm_response = self.llm_client.get_response(transcript, self.system_prompt)
