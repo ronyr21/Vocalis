@@ -77,10 +77,13 @@ export class AudioService {
   
   // Voice detection parameters
   private isVoiceDetected: boolean = false;
-  private voiceThreshold: number = 0.01; // Adjust based on testing
-  private silenceTimeout: number = 1000; // ms to keep recording after voice drops below threshold
+  private voiceThreshold: number = 0.055 ; // Adjust based on testing
+  private silenceTimeout: number = 850; // ms to keep recording after voice drops below threshold
   private lastVoiceTime: number = 0;
-  private minRecordingLength: number = 1000; // Minimum ms of audio to send
+  private minRecordingLength: number = 500; // Minimum ms of audio to send
+
+  // Add the nextPlayTime property to the AudioService class
+  private nextPlayTime: number | null = null;
 
   constructor(config: Partial<AudioConfig> = {}) {
     this.config = { ...DEFAULT_CONFIG, ...config };
@@ -785,6 +788,90 @@ export class AudioService {
         console.error(`Error in ${event} listener:`, error);
       }
     });
+  }
+
+  /**
+   * Play a streaming audio chunk immediately without waiting
+   * Optimized for low-latency real-time playback of streamed TTS
+   */
+  public playStreamingAudioChunk(base64AudioChunk: string, format: string = 'wav'): void {
+    if (this.audioState === AudioState.INACTIVE) {
+      this.audioState = AudioState.SPEAKING;
+      this.dispatchEvent(AudioEvent.AUDIO_STATE_CHANGE, { state: this.audioState });
+    }
+
+    // Decode the audio
+    const binaryData = atob(base64AudioChunk);
+    const arrayBuffer = new ArrayBuffer(binaryData.length);
+    const view = new Uint8Array(arrayBuffer);
+    
+    for (let i = 0; i < binaryData.length; i++) {
+      view[i] = binaryData.charCodeAt(i);
+    }
+    
+    // Initialize audio context if needed
+    if (!this.audioContext) {
+      this.initAudioContext();
+      if (!this.audioContext) {
+        console.error('Failed to initialize AudioContext');
+        this.dispatchEvent(AudioEvent.AUDIO_ERROR, { error: new Error('Failed to initialize AudioContext') });
+        return;
+      }
+    }
+    
+    // Process and play immediately
+    this.audioContext.decodeAudioData(arrayBuffer, 
+      (buffer) => {
+        // Create a source
+        if (!this.audioContext) return;
+        
+        const source = this.audioContext.createBufferSource();
+        source.buffer = buffer;
+        source.connect(this.audioContext.destination);
+        this.currentSource = source;
+        
+        // Calculate when to play this chunk
+        const currentTime = this.audioContext.currentTime;
+        
+        // For larger chunks, we want minimal gap but no overlap
+        // to avoid audio distortion at chunk boundaries
+        let startTime = currentTime;
+        if (this.nextPlayTime && this.nextPlayTime > currentTime) {
+          // Add a tiny delay (2ms) to ensure clean transition
+          // between chunks without causing noticeable gap
+          startTime = this.nextPlayTime + 0.002;
+        }
+        
+        // Start the source at the calculated time
+        source.start(startTime);
+        
+        // Update next play time for sequential playback
+        this.nextPlayTime = startTime + buffer.duration;
+        
+        // Set up ended event to track when streaming is completely done
+        source.onended = () => {
+          if (this.currentSource === source) {
+            this.currentSource = null;
+          }
+        };
+      }, 
+      (error) => {
+        console.error('Error decoding audio data:', error);
+        this.dispatchEvent(AudioEvent.AUDIO_ERROR, { error });
+      }
+    );
+  }
+
+  /**
+   * Reset audio state after streaming is complete
+   */
+  public completeStreamingPlayback(): void {
+    // Reset state immediately - the last chunk has already finished
+    // or will finish independently
+    this.audioState = AudioState.INACTIVE;
+    this.nextPlayTime = null;
+    this.dispatchEvent(AudioEvent.PLAYBACK_END, {});
+    this.dispatchEvent(AudioEvent.AUDIO_STATE_CHANGE, { state: this.audioState });
   }
 }
 

@@ -43,7 +43,10 @@ export enum MessageType {
   VISION_FILE_UPLOAD = "vision_file_upload",
   VISION_FILE_UPLOAD_RESULT = "vision_file_upload_result", 
   VISION_PROCESSING = "vision_processing",
-  VISION_READY = "vision_ready"
+  VISION_READY = "vision_ready",
+  
+  // Add the TOGGLE_STREAMING message type
+  TOGGLE_STREAMING = "toggle_streaming"
 }
 
 // Session interface
@@ -88,7 +91,8 @@ type WebSocketEventType =
   | 'vision_settings_updated'
   | 'vision_file_upload_result'
   | 'vision_processing'
-  | 'vision_ready';
+  | 'vision_ready'
+  | 'toggle_streaming';
 
 // WebSocket state
 export enum ConnectionState {
@@ -563,6 +567,19 @@ export class WebSocketService {
     }
     
     return bytes.buffer;
+  }
+
+  /**
+   * Toggle streaming TTS mode
+   * 
+   * @param enabled Whether to enable streaming
+   * @returns boolean indicating if the request was sent
+   */
+  public toggleStreaming(enabled: boolean): boolean {
+    console.log(`Setting streaming mode to: ${enabled}`);
+    return this.send(MessageType.TOGGLE_STREAMING, {
+      enabled: enabled
+    });
   }
 }
 

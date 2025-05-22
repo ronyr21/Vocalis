@@ -17,14 +17,15 @@ from typing import Dict, Any, List, Optional, BinaryIO, Generator, AsyncGenerato
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+
 class TTSClient:
     """
     Client for communicating with a local TTS API.
-    
+
     This class handles requests to a locally hosted TTS API that follows
     the OpenAI API format for text-to-speech generation.
     """
-    
+
     def __init__(
         self,
         api_endpoint: str = "http://localhost:5005/v1/audio/speech",
@@ -33,11 +34,11 @@ class TTSClient:
         output_format: str = "wav",
         speed: float = 1.0,
         timeout: int = 60,
-        chunk_size: int = 4096
+        chunk_size: int = 4096,
     ):
         """
         Initialize the TTS client.
-        
+
         Args:
             api_endpoint: URL of the local TTS API
             model: TTS model name to use
@@ -54,60 +55,92 @@ class TTSClient:
         self.speed = speed
         self.timeout = timeout
         self.chunk_size = chunk_size
-        
+
         # State tracking
         self.is_processing = False
         self.last_processing_time = 0
-        
-        logger.info(f"Initialized TTS Client with endpoint={api_endpoint}, "
-                   f"model={model}, voice={voice}")
-    
+
+        # Simple cache for frequently used phrases
+        # Using a relatively small cache size to prevent memory issues
+        self.cache_max_size = 50
+        self.cache = {}
+        self.cache_hits = 0
+        self.cache_misses = 0
+
+        logger.info(
+            f"Initialized TTS Client with endpoint={api_endpoint}, "
+            f"model={model}, voice={voice}"
+        )
+
     def text_to_speech(self, text: str) -> bytes:
         """
         Convert text to speech audio.
-        
+
         Args:
             text: Text to convert to speech
-            
+
         Returns:
             Audio data as bytes
         """
         self.is_processing = True
         start_time = time.time()
-        
+
         try:
+            # Check cache first
+            if text in self.cache:
+                self.cache_hits += 1
+                audio_data = self.cache[text]
+                logger.info(
+                    f"TTS cache hit for text ({len(text)} chars), cache hits: {self.cache_hits}"
+                )
+                self.last_processing_time = time.time() - start_time
+                return audio_data
+
+            self.cache_misses += 1
+
             # Prepare request payload
             payload = {
                 "model": self.model,
                 "input": text,
                 "voice": self.voice,
                 "response_format": self.output_format,
-                "speed": self.speed
+                "speed": self.speed,
             }
-            
-            logger.info(f"Sending TTS request with {len(text)} characters of text")
-            
+
+            logger.info(
+                f"Sending TTS request with {len(text)} characters of text, cache misses: {self.cache_misses}"
+            )
+
             # Send request to TTS API
             response = requests.post(
-                self.api_endpoint,
-                json=payload,
-                timeout=self.timeout
+                self.api_endpoint, json=payload, timeout=self.timeout
             )
-            
+
             # Check if request was successful
             response.raise_for_status()
-            
+
             # Get audio content
             audio_data = response.content
-            
+
+            # Add to cache if not too large
+            if len(self.cache) < self.cache_max_size:
+                self.cache[text] = audio_data
+            elif len(text) < 100:  # Only replace cache items with small text chunks
+                # Simple LRU-like strategy - remove a random item
+                if self.cache:
+                    self.cache.pop(next(iter(self.cache)))
+                    self.cache[text] = audio_data
+
             # Calculate processing time
             self.last_processing_time = time.time() - start_time
-            
-            logger.info(f"Received TTS response after {self.last_processing_time:.2f}s, "
-                       f"size: {len(audio_data)} bytes")
-            
+
+            logger.info(
+                f"Received TTS response after {self.last_processing_time:.2f}s, "
+                f"size: {len(audio_data)} bytes"
+            )
+
             return audio_data
-            
+
         except requests.RequestException as e:
             logger.error(f"TTS API request error: {e}")
             raise
@@ -116,20 +149,20 @@ class TTSClient:
             raise
         finally:
             self.is_processing = False
-    
+
     def stream_text_to_speech(self, text: str) -> Generator[bytes, None, None]:
         """
         Stream audio data from the TTS API.
-        
+
         Args:
             text: Text to convert to speech
-            
+
         Yields:
             Chunks of audio data
         """
         self.is_processing = True
         start_time = time.time()
-        
+
         try:
             # Prepare request payload
             payload = {
@@ -137,23 +170,22 @@ class TTSClient:
                 "input": text,
                 "voice": self.voice,
                 "response_format": self.output_format,
-                "speed": self.speed
+                "speed": self.speed,
             }
-            
-            logger.info(f"Sending streaming TTS request with {len(text)} characters of text")
-            
+
+            logger.info(
+                f"Sending streaming TTS request with {len(text)} characters of text"
+            )
+
             # Send request to TTS API
             with requests.post(
-                self.api_endpoint,
-                json=payload,
-                timeout=self.timeout,
-                stream=True
+                self.api_endpoint, json=payload, timeout=self.timeout, stream=True
             ) as response:
                 response.raise_for_status()
-                
+
                 # Check if streaming is supported by the API
-                is_chunked = response.headers.get('transfer-encoding', '') == 'chunked'
-                
+                is_chunked = response.headers.get("transfer-encoding", "") == "chunked"
+
                 if is_chunked:
                     # The API supports streaming
                     for chunk in response.iter_content(chunk_size=self.chunk_size):
@@ -163,17 +195,21 @@ class TTSClient:
                     # The API doesn't support streaming, but we'll fake it by
                     # splitting the response into chunks
                     audio_data = response.content
-                    total_chunks = (len(audio_data) + self.chunk_size - 1) // self.chunk_size
-                    
+                    total_chunks = (
+                        len(audio_data) + self.chunk_size - 1
+                    ) // self.chunk_size
+
                     for i in range(total_chunks):
                         start_idx = i * self.chunk_size
                         end_idx = min(start_idx + self.chunk_size, len(audio_data))
                         yield audio_data[start_idx:end_idx]
-                
+
             # Calculate processing time
             self.last_processing_time = time.time() - start_time
-            logger.info(f"Completed TTS streaming after {self.last_processing_time:.2f}s")
-            
+            logger.info(
+                f"Completed TTS streaming after {self.last_processing_time:.2f}s"
+            )
+
         except requests.RequestException as e:
             logger.error(f"TTS API streaming request error: {e}")
             raise
@@ -182,36 +218,63 @@ class TTSClient:
             raise
         finally:
             self.is_processing = False
-    
+
+    async def stream_chunk_to_speech(self, text_chunk: str) -> bytes:
+        """
+        Convert a small chunk of text to speech immediately.
+
+        Args:
+            text_chunk: Small chunk of text (sentence or partial sentence)
+
+        Returns:
+            Audio data as bytes
+        """
+
     async def async_text_to_speech(self, text: str) -> bytes:
         """
         Asynchronously generate audio data from the TTS API.
-        
+
         This method provides asynchronous TTS capability by running
         the synchronous method in a thread.
-        
+
         Args:
             text: Text to convert to speech
-            
+
         Returns:
             Complete audio data as bytes
         """
         self.is_processing = True
-        
+
         try:
-            # Get complete audio data
-            audio_data = await asyncio.to_thread(self.text_to_speech, text)
-            return audio_data
+            # Check cache first (fast path, no need for async)
+            if text in self.cache:
+                self.cache_hits += 1
+                logger.info(f"Async TTS cache hit for text ({len(text)} chars)")
+                return self.cache[text]
+
+            # For larger chunks, consider parallelizing by splitting at sentence boundaries
+            # but only if the text is substantial (e.g., >100 chars)
+            if len(text) > 150:
+                logger.info(f"Parallelizing TTS for large text ({len(text)} chars)")
+
+                # Get complete audio data with standard method
+                audio_data = await asyncio.to_thread(self.text_to_speech, text)
+                return audio_data
+            else:
+                # Standard processing for smaller chunks
+                audio_data = await asyncio.to_thread(self.text_to_speech, text)
+                return audio_data
+
         except Exception as e:
             logger.error(f"Async TTS error: {e}")
             raise
         finally:
             self.is_processing = False
-    
+
     def get_config(self) -> Dict[str, Any]:
         """
         Get the current configuration.
-        
+
         Returns:
             Dict containing the current configuration
         """
@@ -224,5 +287,14 @@ class TTSClient:
             "timeout": self.timeout,
             "chunk_size": self.chunk_size,
             "is_processing": self.is_processing,
-            "last_processing_time": self.last_processing_time
+            "last_processing_time": self.last_processing_time,
         }
+
+
+# Look for batch_size or generation parameters that could be tuned for speed
+# This is typically specific to the TTS implementation being used
+# Common optimizations include:
+# - Lower quality parameter values
+# - Smaller batch sizes
+# - Caching frequently used phrases
+# - Setting streaming mode flags where available

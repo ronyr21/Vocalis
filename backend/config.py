@@ -13,8 +13,12 @@ from typing import Dict, Any
 load_dotenv()
 
 # API Endpoints
-LLM_API_ENDPOINT = os.getenv("LLM_API_ENDPOINT", "http://127.0.0.1:1234/v1/chat/completions")
-TTS_API_ENDPOINT = os.getenv("TTS_API_ENDPOINT", "http://localhost:5005/v1/audio/speech")
+LLM_API_ENDPOINT = os.getenv(
+    "LLM_API_ENDPOINT", "http://127.0.0.1:1234/v1/chat/completions"
+)
+TTS_API_ENDPOINT = os.getenv(
+    "TTS_API_ENDPOINT", "http://localhost:5005/v1/audio/speech"
+)
 
 # Whisper Model Configuration
 WHISPER_MODEL = os.getenv("WHISPER_MODEL", "tiny.en")
@@ -23,6 +27,13 @@ WHISPER_MODEL = os.getenv("WHISPER_MODEL", "tiny.en")
 TTS_MODEL = os.getenv("TTS_MODEL", "tts-1")
 TTS_VOICE = os.getenv("TTS_VOICE", "tara")
 TTS_FORMAT = os.getenv("TTS_FORMAT", "wav")
+
+# Vision Model Configuration
+ENABLE_VISION_MODEL = os.getenv("ENABLE_VISION_MODEL", "False").lower() in (
+    "true",
+    "1",
+    "yes",
+)
 
 # WebSocket Server Configuration
 WEBSOCKET_HOST = os.getenv("WEBSOCKET_HOST", "0.0.0.0")
@@ -33,10 +44,11 @@ VAD_THRESHOLD = float(os.getenv("VAD_THRESHOLD", 0.5))
 VAD_BUFFER_SIZE = int(os.getenv("VAD_BUFFER_SIZE", 30))
 AUDIO_SAMPLE_RATE = int(os.getenv("AUDIO_SAMPLE_RATE", 48000))
 
+
 def get_config() -> Dict[str, Any]:
     """
     Returns all configuration settings as a dictionary.
-    
+
     Returns:
         Dict[str, Any]: Dictionary containing all configuration settings
     """
@@ -52,4 +64,5 @@ def get_config() -> Dict[str, Any]:
         "vad_threshold": VAD_THRESHOLD,
         "vad_buffer_size": VAD_BUFFER_SIZE,
         "audio_sample_rate": AUDIO_SAMPLE_RATE,
+        "enable_vision_model": ENABLE_VISION_MODEL,
     }

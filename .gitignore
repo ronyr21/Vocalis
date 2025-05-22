@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+.env
+.mypy_cache/
+.pytest_cache/
+
+# Node.js
+node_modules/
+package-lock.json
+npm-debug.log
+yarn-error.log
+
+# macOS
+.DS_Store
+
+# IDEs and editors
+.idea/
+.vscode/
+
+# Logs
+*.log
