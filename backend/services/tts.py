@@ -12,6 +12,8 @@ import time
 import base64
 import asyncio
 from typing import Dict, Any, List, Optional, BinaryIO, Generator, AsyncGenerator
+from concurrent.futures import ThreadPoolExecutor
+import threading
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -66,6 +68,9 @@ class TTSClient:
         self.cache = {}
         self.cache_hits = 0
         self.cache_misses = 0
+
+        self.executor = ThreadPoolExecutor(max_workers=1)
+        self.interrupt_event = threading.Event()
 
         logger.info(
             f"Initialized TTS Client with endpoint={api_endpoint}, "
@@ -150,7 +155,7 @@ class TTSClient:
         finally:
             self.is_processing = False
 
-    def stream_text_to_speech(self, text: str) -> Generator[bytes, None, None]:
+    def stream_text_to_speech1(self, text: str) -> Generator[bytes, None, None]:
         """
         Stream audio data from the TTS API.
 
@@ -219,16 +224,38 @@ class TTSClient:
         finally:
             self.is_processing = False
 
-    async def stream_chunk_to_speech(self, text_chunk: str) -> bytes:
-        """
-        Convert a small chunk of text to speech immediately.
+    async def stream_text_to_speech(self, text, websocket):
+        self.interrupt_event.clear()  # Reset the interrupt signal
 
-        Args:
-            text_chunk: Small chunk of text (sentence or partial sentence)
+        def generate_chunks():
+            response = requests.post(
+                "http://localhost:5005/tts/stream", json={"text": text}, stream=True
+            )
+            for chunk in response.iter_content(chunk_size=1024):
+                if self.interrupt_event.is_set():  # Stop if interrupted
+                    break
+                if chunk:
+                    yield chunk
 
-        Returns:
-            Audio data as bytes
-        """
+        loop = asyncio.get_running_loop()
+        queue = asyncio.Queue()
+
+        # Run TTS generation in a thread
+        def run_generation():
+            for chunk in generate_chunks():
+                loop.call_soon_threadsafe(queue.put_nowait, chunk)
+            loop.call_soon_threadsafe(queue.put_nowait, None)  # Signal end
+
+        future = loop.run_in_executor(self.executor, run_generation)
+
+        # Send chunks to WebSocket as they come
+        while True:
+            chunk = await queue.get()
+            if chunk is None or self.interrupt_event.is_set():
+                break
+            await websocket.send_bytes(chunk)
+
+        await future  # Wait for thread to finish cleanly
 
     async def async_text_to_speech(self, text: str) -> bytes:
         """
@@ -258,11 +285,13 @@ class TTSClient:
                 logger.info(f"Parallelizing TTS for large text ({len(text)} chars)")
 
                 # Get complete audio data with standard method
-                audio_data = await asyncio.to_thread(self.text_to_speech, text)
+                # audio_data = await asyncio.to_thread(self.text_to_speech, text)
+                audio_data = await asyncio.to_thread(self.stream_text_to_speech, text)
                 return audio_data
             else:
                 # Standard processing for smaller chunks
-                audio_data = await asyncio.to_thread(self.text_to_speech, text)
+                # audio_data = await asyncio.to_thread(self.text_to_speech, text)
+                audio_data = await asyncio.to_thread(self.stream_text_to_speech, text)
                 return audio_data
 
         except Exception as e:
