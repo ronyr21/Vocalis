@@ -69,6 +69,7 @@ export class AudioService {
   private isSpeaking: boolean = false; // Distinct from isPlaying to track TTS specifically
   private isMuted: boolean = false; // Track microphone mute state
   private currentSource: AudioBufferSourceNode | null = null;
+  private isPendingResponse: boolean = false; // Track pending response state
   
   // State tracking (for UI coordination)
   private isProcessing: boolean = false;
@@ -81,6 +82,7 @@ export class AudioService {
   private silenceTimeout: number = 850; // ms to keep recording after voice drops below threshold
   private lastVoiceTime: number = 0;
   private minRecordingLength: number = 500; // Minimum ms of audio to send
+  private interruptThreshold: number = 0.030; // Lower threshold specifically for interruption
 
   // Add the nextPlayTime property to the AudioService class
   private nextPlayTime: number | null = null;
@@ -115,6 +117,14 @@ export class AudioService {
     console.log(`Vision processing state set to: ${isVisionProcessing}`);
   }
   
+  /**
+   * Set pending response state from UI
+   * This tracks when system is about to generate a follow-up response
+   */
+  public setPendingResponseState(isPending: boolean): void {
+    this.isPendingResponse = isPending;
+    console.log(`Pending response state set to: ${isPending}`);
+  }
 
   /**
    * Initialize the audio context
@@ -297,8 +307,13 @@ export class AudioService {
     // Calculate RMS energy
     const energy = this.calculateRMSEnergy(bufferCopy);
     
+    // Use different thresholds depending on current state
+    // During speaking, we use a LOWER threshold to detect interruptions more easily
+    const effectiveThreshold = (this.isSpeaking || this.audioState === AudioState.SPEAKING) ? 
+      this.interruptThreshold : this.voiceThreshold;
+    
     // Check if energy is above threshold (voice detected)
-    if (energy > this.voiceThreshold) {
+    if (energy > effectiveThreshold) {
       // Check if in a protected state - if so, ignore voice detection entirely
       if (this.isProcessing || this.isVisionProcessing || this.isGreeting) {
         let state = "processing";
@@ -306,7 +321,6 @@ export class AudioService {
         if (this.isGreeting) state = "greeting";
         
         console.log(`Voice detected during ${state} (energy: ${energy.toFixed(4)}), ignoring`);
-        // Skip further processing - don't even update isVoiceDetected
         
         // Still dispatch event for visualization, but mark isVoice as false
         this.dispatchEvent(AudioEvent.RECORDING_DATA, { 
@@ -318,28 +332,40 @@ export class AudioService {
         return;
       }
       
+      // Special handling for speaking state - IMMEDIATE INTERRUPT with high priority
+      if (this.isSpeaking || this.audioState === AudioState.SPEAKING) {
+        console.log(`INTERRUPT: Voice detected during speech (energy: ${energy.toFixed(4)})`);
+        
+        // Force immediate interrupt with high priority
+        this._forceInterrupt();
+        
+        // Mark voice as detected for further processing
+        this.isVoiceDetected = true;
+        this.lastVoiceTime = Date.now();
+        
+        // Dispatch event for visualization with interrupt flag
+        this.dispatchEvent(AudioEvent.RECORDING_DATA, { 
+          buffer: bufferCopy,
+          energy: energy,
+          isVoice: true,
+          interrupt: true
+        });
+        
+        return; // Skip the rest of processing after interrupt
+      }
+      
+      // Normal voice detection handling when not speaking
       if (!this.isVoiceDetected) {
         console.log('Voice detected, energy:', energy);
         this.isVoiceDetected = true;
-        
-      // Check if we're currently playing TTS audio
-      // If so, interrupt it immediately - BUT NOT during greeting
-      // Also explicitly check audioState to catch any edge cases
-      if ((this.isSpeaking || this.audioState === AudioState.SPEAKING) && !this.isGreeting) {
-        console.log('User started speaking while assistant was speaking - interrupting playback',
-                   `isSpeaking=${this.isSpeaking}, audioState=${this.audioState}, isGreeting=${this.isGreeting}`);
-        // Stop playback locally
-        this.stopPlayback();
-        // Send interrupt signal to server
-        websocketService.interrupt();
-        // Dispatch an event so UI can update
-        this.dispatchEvent(AudioEvent.PLAYBACK_STOP, {
-          interrupted: true,
-          reason: 'user_interrupt'
-        });
-      } else if (this.isGreeting) {
-        console.log('Voice detected during greeting - suppressing interrupt');
-      }
+      
+        // Check for pending response
+        if (this.isPendingResponse && !this.isGreeting) {
+          console.log('Voice detected while preparing response - cancelling');
+          
+          // Force interrupt with high priority
+          this._forceInterrupt();
+        }
       }
       this.lastVoiceTime = Date.now();
     }
@@ -645,43 +671,73 @@ export class AudioService {
   }
 
   /**
-   * Stop audio playback
+   * Force immediate interrupt with highest priority
+   * This is a focused method specifically for interruption
    */
-  public stopPlayback(): void {
-    if (!this.currentSource) {
-      return;
-    }
+  private _forceInterrupt(): void {
+    console.log('FORCING IMMEDIATE INTERRUPT');
     
-    // Store previous state for the event
-    const previousState = this.audioState;
+    // Force state to interrupted immediately
+    this.audioState = AudioState.INTERRUPTED;
     
-    try {
-      this.currentSource.stop();
-      this.currentSource = null;
-    } catch (error) {
-      console.error('Error stopping playback:', error);
-    }
-    
-    // Clear the queue
-    this.audioQueue = [];
-    
-    // Set state to INTERRUPTED if we were SPEAKING
-    if (previousState === AudioState.SPEAKING) {
-      this.audioState = AudioState.INTERRUPTED;
-    } else {
-      this.audioState = AudioState.INACTIVE;
-    }
-    
+    // Reset all flags immediately
+    this.isPendingResponse = false;
     this.isPlaying = false;
     this.isSpeaking = false;
     
-    // Dispatch event with previous state info
-    this.dispatchEvent(AudioEvent.PLAYBACK_STOP, { 
-      interrupted: previousState === AudioState.SPEAKING,
-      previousState: previousState
+    // Stop and disconnect any current source immediately
+    if (this.currentSource) {
+      try {
+        // Using the most direct way to stop immediately
+        this.currentSource.stop(0);
+        this.currentSource.disconnect();
+        this.currentSource = null;
+      } catch (e) {
+        console.error('Error stopping audio source during force interrupt:', e);
+      }
+    }
+    
+    // Aggressively clear audio queue
+    this.audioQueue = [];
+    
+    // Reset next play time
+    this.nextPlayTime = null;
+    
+    // Send multiple interrupt signals to server
+    websocketService.interrupt();
+    
+    // Send additional interrupt signal after small delay
+    setTimeout(() => websocketService.interrupt(), 50);
+    
+    // Dispatch multiple events to ensure UI updates
+    this.dispatchEvent(AudioEvent.PLAYBACK_STOP, {
+      interrupted: true,
+      reason: 'force_interrupt'
     });
     
-    console.log('Playback stopped');
+    this.dispatchEvent(AudioEvent.AUDIO_STATE_CHANGE, { 
+      state: this.audioState,
+      force: true
+    });
+    
+    // Reset to inactive state after brief delay
+    setTimeout(() => {
+      if (this.audioState === AudioState.INTERRUPTED) {
+        this.audioState = AudioState.INACTIVE;
+        this.dispatchEvent(AudioEvent.AUDIO_STATE_CHANGE, { 
+          state: this.audioState 
+        });
+      }
+    }, 200);
+  }
+
+  /**
+   * Stop audio playback
+   */
+  public stopPlayback(): void {
+    if (this.audioState === AudioState.PLAYING || this.audioState === AudioState.SPEAKING) {
+      this._forceInterrupt(); // Use the focused interrupt method
+    }
   }
 
   /**

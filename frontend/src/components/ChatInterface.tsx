@@ -286,6 +286,27 @@ const ChatInterface: React.FC = () => {
     
     // Handle raw audio data for early voice detection
     const handleAudioData = (data: any) => {
+      // Lower threshold specifically for interrupting ongoing speech
+      const interruptThreshold = 0.015; // Very sensitive threshold when speaking
+      
+      // Check if we need to interrupt ongoing speech immediately
+      if ((assistantState === 'speaking' || audioService.getAudioState() === AudioState.SPEAKING) && 
+          data.energy > interruptThreshold && 
+          !assistantState.includes('greeting') && 
+          callActive) {
+        
+        console.log(`Speech interrupt triggered: energy=${data.energy.toFixed(4)}, threshold=${interruptThreshold}`);
+        
+        // Immediate stop of audio playback
+        audioService.stopPlayback();
+        
+        // Force interrupt signal
+        websocketService.interrupt();
+        
+        // Show listening UI immediately without waiting for VAD
+        setAssistantState('listening');
+      }
+
       // Two-tier threshold approach:
       
       // 1. LOWER threshold for "potential speech" - blocks follow-ups but doesn't show listening UI
@@ -354,11 +375,9 @@ const ChatInterface: React.FC = () => {
       // Store the response text
       setResponse(data.text);
       
-      // If we're in greeting state, this is the greeting response
-      if (assistantState === 'greeting') {
-        console.log('Received LLM response during greeting state');
-        // Note: We'll transition to speaking when audio playback actually starts
-      }
+      // Reset pending response flag when actual response arrives
+      audioService.setPendingResponseState(false);
+      console.log('LLM response received, cleared pending response flag');
     };
     
     // Audio playback event handlers - we use these instead of TTS WebSocket events
@@ -580,6 +599,9 @@ const ChatInterface: React.FC = () => {
           return;
         }
         
+        // CRITICAL ADDITION: Set the pending response flag BEFORE sending follow-up
+        audioService.setPendingResponseState(true);
+        
         // Start a brief "listening window" to detect any just-started speech
         console.log(`Follow-up timer fired, starting pre-follow-up listening window (${followUpTier + 1})...`);
         
@@ -610,6 +632,8 @@ const ChatInterface: React.FC = () => {
             // Increment tier for next time (cycle through 0-2)
             setFollowUpTier((prevTier) => (prevTier + 1) % 3);
           } else {
+            // CRITICAL ADDITION: Reset pending flag if we don't send follow-up
+            audioService.setPendingResponseState(false);
             console.log(`Conditions not met for follow-up, cancelling`);
             console.log(`State that prevented follow-up: assistantState=${assistantState}, audioState=${audioState}, preventFollowUp=${preventFollowUp}`);
           }
@@ -672,9 +696,18 @@ const ChatInterface: React.FC = () => {
           // Check if assistant is currently speaking - if so, interrupt it
           if (assistantState === 'speaking') {
             console.log('Interrupting TTS playback due to new speech...');
+            
+            // First stop local audio playback immediately
             audioService.stopPlayback();
+            
+            // Send interrupt to server
             websocketService.interrupt();
+            
+            // Force state change immediately to prevent race conditions
             setAssistantState('processing');
+            
+            // Start recording immediately without delay
+            await audioService.startRecording();
           }
           
           // Always re-enable call state when starting microphone in first interaction

@@ -352,19 +352,33 @@ class LLMClient:
 
     def clear_history(self, keep_system_prompt: bool = True) -> None:
         """
-        Clear conversation history.
+        Clear the conversation history.
 
         Args:
-            keep_system_prompt: Whether to keep the system prompt if it exists
+            keep_system_prompt: Whether to keep the system prompt in history
         """
+        # If we should keep the system prompt and it exists as the first message
         if (
             keep_system_prompt
             and self.conversation_history
             and self.conversation_history[0]["role"] == "system"
         ):
-            self.conversation_history = [self.conversation_history[0]]
+            system_prompt = self.conversation_history[0]
+            self.conversation_history = [system_prompt]
         else:
             self.conversation_history = []
+
+        logger.info("Cleared conversation history")
+
+    def reset_state(self) -> None:
+        """
+        Forcibly reset the LLM client state.
+
+        This is useful when operations need to be interrupted immediately,
+        such as when the user sends an interrupt command.
+        """
+        self.is_processing = False
+        logger.info("LLM client state forcibly reset")
 
     def get_config(self) -> Dict[str, Any]:
         """

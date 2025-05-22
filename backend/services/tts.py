@@ -225,37 +225,113 @@ class TTSClient:
             self.is_processing = False
 
     async def stream_text_to_speech(self, text, websocket):
-        self.interrupt_event.clear()  # Reset the interrupt signal
+        """
+        Stream text to speech and send audio to client
+
+        Args:
+            text: Text to convert to speech
+            websocket: WebSocket connection to send audio to
+        """
+        # Reset interrupt flag before starting
+        self.interrupt_event.clear()
+        # Set processing flag to indicate we're generating speech
+        self.is_processing = True
+
+        logger.info(f"Starting TTS for text: {text[:50]}...")
 
         def generate_chunks():
-            response = requests.post(
-                "http://localhost:5005/tts/stream", json={"text": text}, stream=True
-            )
-            for chunk in response.iter_content(chunk_size=1024):
-                if self.interrupt_event.is_set():  # Stop if interrupted
+            try:
+                # Get the appropriate streaming endpoint based on config
+                stream_endpoint = f"{self.api_endpoint.rstrip('/').replace('/v1/audio/speech', '')}/tts/stream"
+                logger.info(f"Using TTS streaming endpoint: {stream_endpoint}")
+
+                # Make the request with streaming enabled
+                response = requests.post(
+                    stream_endpoint, json={"text": text}, stream=True
+                )
+
+                # Check response status
+                response.raise_for_status()
+
+                # Track if any interrupts have been processed
+                interrupted = False
+
+                # Iterate through chunks, checking interrupt flag frequently
+                for chunk in response.iter_content(chunk_size=1024):
+                    # Priority check for interrupt before processing chunk
+                    if self.interrupt_event.is_set():
+                        logger.info("TTS generation interrupted")
+                        interrupted = True
+                        break
+
+                    # Only yield if not interrupted
+                    if chunk and not interrupted:
+                        yield chunk
+
+                        # Extra interrupt check immediately after yielding
+                        # This provides more responsiveness to interrupts
+                        if self.interrupt_event.is_set():
+                            logger.info(
+                                "TTS generation interrupted after yielding chunk"
+                            )
+                            interrupted = True
+                            break
+
+            except Exception as e:
+                logger.error(f"Error in TTS chunk generation: {e}")
+                # If error occurs, yield empty chunk to maintain flow
+                yield b""
+
+        try:
+            # Prepare chunks generator
+            chunks = generate_chunks()
+
+            # Send TTS start message before first chunk
+            if not self.interrupt_event.is_set():
+                await websocket.send_json({"type": "tts_start"})
+
+            # Process chunks and send to websocket
+            for chunk in chunks:
+                # Immediately stop if interrupted
+                if self.interrupt_event.is_set():
+                    logger.info("Stopping TTS stream due to interrupt")
                     break
+
+                # Only send non-empty chunks
                 if chunk:
-                    yield chunk
+                    # Convert chunk to base64 for JSON transport
+                    b64_chunk = base64.b64encode(chunk).decode("utf-8")
 
-        loop = asyncio.get_running_loop()
-        queue = asyncio.Queue()
+                    # Send chunk as JSON with type and format
+                    await websocket.send_json(
+                        {"type": "tts_chunk", "audio_chunk": b64_chunk, "format": "wav"}
+                    )
 
-        # Run TTS generation in a thread
-        def run_generation():
-            for chunk in generate_chunks():
-                loop.call_soon_threadsafe(queue.put_nowait, chunk)
-            loop.call_soon_threadsafe(queue.put_nowait, None)  # Signal end
+                    # Check interrupt again immediately after sending
+                    if self.interrupt_event.is_set():
+                        logger.info("Interrupt detected after sending chunk")
+                        break
 
-        future = loop.run_in_executor(self.executor, run_generation)
+            # Always send TTS end message, even if interrupted
+            await websocket.send_json({"type": "tts_end"})
 
-        # Send chunks to WebSocket as they come
-        while True:
-            chunk = await queue.get()
-            if chunk is None or self.interrupt_event.is_set():
-                break
-            await websocket.send_bytes(chunk)
+            if self.interrupt_event.is_set():
+                logger.info("TTS stream completed (interrupted)")
+            else:
+                logger.info("TTS stream completed normally")
 
-        await future  # Wait for thread to finish cleanly
+        except Exception as e:
+            logger.error(f"Error during TTS streaming: {e}")
+            # Try to send error if websocket is still open
+            try:
+                await websocket.send_json(
+                    {"type": "error", "error": f"TTS error: {str(e)}"}
+                )
+            except:
+                pass
+        finally:
+            # Always reset processing flag
+            self.is_processing = False
 
     async def async_text_to_speech(self, text: str) -> bytes:
         """
@@ -279,24 +355,23 @@ class TTSClient:
                 logger.info(f"Async TTS cache hit for text ({len(text)} chars)")
                 return self.cache[text]
 
-            # For larger chunks, consider parallelizing by splitting at sentence boundaries
-            # but only if the text is substantial (e.g., >100 chars)
-            if len(text) > 150:
-                logger.info(f"Parallelizing TTS for large text ({len(text)} chars)")
+            # For larger chunks, process in a thread pool to not block the event loop
+            logger.info(f"Async TTS request for text ({len(text)} chars)")
+            start_time = time.time()
+            audio_data = await asyncio.to_thread(self.text_to_speech, text)
+            processing_time = time.time() - start_time
+            self.last_processing_time = processing_time
 
-                # Get complete audio data with standard method
-                # audio_data = await asyncio.to_thread(self.text_to_speech, text)
-                audio_data = await asyncio.to_thread(self.stream_text_to_speech, text)
-                return audio_data
-            else:
-                # Standard processing for smaller chunks
-                # audio_data = await asyncio.to_thread(self.text_to_speech, text)
-                audio_data = await asyncio.to_thread(self.stream_text_to_speech, text)
-                return audio_data
+            # Store in cache after successful generation
+            self.cache[text] = audio_data
+
+            logger.info(f"Async TTS completed in {processing_time:.3f}s")
+            return audio_data
 
         except Exception as e:
             logger.error(f"Async TTS error: {e}")
-            raise
+            # Return empty audio on error
+            return b""
         finally:
             self.is_processing = False
 
@@ -318,6 +393,17 @@ class TTSClient:
             "is_processing": self.is_processing,
             "last_processing_time": self.last_processing_time,
         }
+
+    def reset_state(self):
+        """
+        Forcibly reset the TTS client state.
+
+        This is used when operations need to be interrupted immediately,
+        such as when a user interrupts ongoing TTS playback.
+        """
+        logger.info("Forcibly resetting TTS client state")
+        self.is_processing = False
+        self.interrupt_event.set()  # Signal any ongoing streaming to stop
 
 
 # Look for batch_size or generation parameters that could be tuned for speed

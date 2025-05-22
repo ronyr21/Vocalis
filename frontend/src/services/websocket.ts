@@ -228,17 +228,45 @@ export class WebSocketService {
 
   /**
    * Send an interrupt signal to stop ongoing TTS
-   * Will not send if we're in the initial greeting flow
+   * Enhanced with fail-safe approach for maximum reliability
    */
   public interrupt(): boolean {
-    // Don't send interrupt during greeting flow
-    if (this.isInGreetingFlow) {
-      console.log('Interrupt prevented: still in greeting flow');
-      return false;
-    }
+    console.log('!!! CRITICAL: Sending interrupt signal to server !!!');
     
-    console.log('Sending interrupt signal to server');
-    return this.send(MessageType.INTERRUPT);
+    // Always reset greeting flow protection on interrupt
+    this.isInGreetingFlow = false;
+    
+    let successCount = 0;
+    
+    // IMMEDIATE first interrupt - highest priority
+    const sent = this.send(MessageType.INTERRUPT);
+    if (sent) successCount++;
+    
+    // IMMEDIATE second interrupt using setTimeout with 0ms
+    // This ensures it goes into a separate browser task for reliability
+    setTimeout(() => {
+      if (this.socket?.readyState === WebSocket.OPEN) {
+        const sent = this.send(MessageType.INTERRUPT);
+        if (sent) successCount++;
+        console.log(`Immediate follow-up interrupt sent: ${sent}`);
+      }
+    }, 0);
+    
+    // Staggered additional interrupts to ensure at least one gets through
+    // even if there's network congestion or processing delays
+    const retryTimes = [50, 150, 300];
+    
+    retryTimes.forEach((delay) => {
+      setTimeout(() => {
+        if (this.socket?.readyState === WebSocket.OPEN) {
+          const sent = this.send(MessageType.INTERRUPT);
+          if (sent) successCount++;
+          console.log(`Delayed interrupt signal (${delay}ms) sent: ${sent}`);
+        }
+      }, delay);
+    });
+    
+    return sent;
   }
   
   /**

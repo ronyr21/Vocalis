@@ -245,20 +245,51 @@ class WebSocketManager:
             # Let whisper handle the WAV data directly - it can parse WAV headers
             audio_array = np.frombuffer(audio_data, dtype=np.uint8)
 
+            # First, clear any existing interrupt flags to prepare for new processing
+            self.interrupt_playback.clear()
+
             # Interrupt any ongoing TTS playback
             if self.tts_client.is_processing:
                 logger.info("Interrupting TTS playback due to new speech")
-                self.interrupt_playback.set()
 
-                # Let any current processing finish before starting new
+                # Set interrupt event and reset TTS state
+                self.interrupt_playback.set()
+                self.tts_client.interrupt_event.set()
+                self.tts_client.reset_state()
+
+                # Send an immediate TTS_END to client to ensure UI resets
+                await websocket.send_json(
+                    {
+                        "type": MessageType.TTS_END,
+                        "timestamp": datetime.now().isoformat(),
+                    }
+                )
+
+                # Cancel current audio task if it exists
                 if self.current_audio_task and not self.current_audio_task.done():
                     try:
-                        await self.current_audio_task
+                        self.current_audio_task.cancel()
+                        logger.info("Previous audio task cancelled due to new speech")
                     except asyncio.CancelledError:
-                        logger.info("Previous audio task cancelled")
+                        logger.info("Previous audio task cancelled successfully")
+                    except Exception as e:
+                        logger.error(f"Error cancelling audio task: {e}")
 
-            # Process the audio segment in a background task
-            # Whisper will handle voice activity detection internally
+                # Wait for any pending tasks to complete
+                # Using a short timeout to prevent blocking for too long
+                await asyncio.sleep(0.1)
+
+                # Clear interrupt flag AFTER interruption is complete to prepare for new processing
+                self.interrupt_playback.clear()
+
+                # Let client know we're ready for new input
+                await self._send_status(
+                    websocket,
+                    "interrupted",
+                    {"tts_active": False, "ready_for_input": True},
+                )
+
+            # Create a new task for the current audio processing
             self.current_audio_task = asyncio.create_task(
                 self._process_speech_segment(websocket, audio_array)
             )
@@ -289,116 +320,154 @@ class WebSocketManager:
             self.is_processing = True
             self.interrupt_playback.clear()
 
-            # Transcribe speech
-            await self._send_status(websocket, "transcribing", {})
-            transcript, metadata = self.transcriber.transcribe(speech_audio)
-
-            # Send transcription result
-            await websocket.send_json(
-                {
-                    "type": MessageType.TRANSCRIPTION,
-                    "text": transcript,
-                    "metadata": metadata,
-                    "timestamp": datetime.now().isoformat(),
-                }
+            # Add timeout protection
+            process_timeout = asyncio.create_task(
+                asyncio.sleep(10)
+            )  # 10-second timeout
+            processing_task = asyncio.create_task(
+                self._actual_speech_processing(websocket, speech_audio)
             )
 
-            # Skip LLM and TTS if transcription is empty
-            if not transcript.strip():
-                logger.info("Empty transcription, skipping LLM and TTS")
+            done, pending = await asyncio.wait(
+                [process_timeout, processing_task], return_when=asyncio.FIRST_COMPLETED
+            )
 
-                # Notify frontend that transcription occurred to let it reset
+            if process_timeout in done:
+                # Timeout occurred, cancel the processing
+                processing_task.cancel()
+                logger.warning("Speech processing timed out, forcefully interrupted")
+                self.interrupt_playback.set()
                 await websocket.send_json(
                     {
-                        "type": MessageType.TRANSCRIPTION,
-                        "text": transcript,
-                        "metadata": {},
+                        "type": MessageType.ERROR,
+                        "error": "Processing timed out",
                         "timestamp": datetime.now().isoformat(),
                     }
                 )
 
-                # Still send TTS_END to fully reset UI
-                await websocket.send_json(
-                    {
-                        "type": MessageType.TTS_END,
-                        "timestamp": datetime.now().isoformat(),
-                    }
-                )
-                return
-
-            # Check if we have recent vision context to incorporate
-            has_vision_context = self.current_vision_context is not None
-
-            # Signal TTS start before LLM processing
-            await websocket.send_json(
-                {"type": MessageType.TTS_START, "timestamp": datetime.now().isoformat()}
-            )
-
-            await self._send_status(websocket, "generating_speech", {"streaming": True})
-
-            if has_vision_context:
-                logger.info("Processing speech with vision context")
-
-                # Add vision context to conversation history
-                self._add_vision_context_to_conversation(self.current_vision_context)
-
-                # Enhance user query with vision context reference
-                enhanced_transcript = f"{transcript} [Note: This question refers to the image I just analyzed.]"
-
-                # Stream LLM response with vision-aware context
-                await self._send_status(
-                    websocket,
-                    "processing_llm",
-                    {"has_vision_context": True, "streaming": True},
-                )
-
-                # Use streaming response
-                full_response = ""
-                async for text_chunk in self._stream_llm_to_tts(
-                    websocket, enhanced_transcript, self.system_prompt
-                ):
-                    full_response += text_chunk
-
-                # Clear vision context after use
-                self.current_vision_context = None
-                logger.info("Vision context processed and cleared")
-            else:
-                # Normal non-vision processing with streaming
-                await self._send_status(
-                    websocket, "processing_llm", {"streaming": True}
-                )
-
-                # Use streaming response
-                full_response = ""
-                async for text_chunk in self._stream_llm_to_tts(
-                    websocket, transcript, self.system_prompt
-                ):
-                    full_response += text_chunk
-
-            # Send LLM response (complete) for display/history purposes
-            await websocket.send_json(
-                {
-                    "type": MessageType.LLM_RESPONSE,
-                    "text": full_response,
-                    "metadata": {"streaming": True},
-                    "timestamp": datetime.now().isoformat(),
-                }
-            )
-
-            # Signal TTS end
-            if not self.interrupt_playback.is_set():
-                await websocket.send_json(
-                    {
-                        "type": MessageType.TTS_END,
-                        "timestamp": datetime.now().isoformat(),
-                    }
-                )
+            # Cancel the timeout if processing completed normally
+            process_timeout.cancel()
 
         except Exception as e:
             logger.error(f"Error processing speech segment: {e}")
             await self._send_error(websocket, f"Speech processing error: {str(e)}")
         finally:
             self.is_processing = False
+
+    async def _actual_speech_processing(
+        self, websocket: WebSocket, speech_audio: np.ndarray
+    ):
+        """
+        Perform the actual speech processing work.
+
+        This method is called by _process_speech_segment with a timeout wrapper.
+
+        Args:
+            websocket: The WebSocket connection
+            speech_audio: Speech audio as numpy array
+        """
+        # Transcribe speech
+        await self._send_status(websocket, "transcribing", {})
+        transcript, metadata = self.transcriber.transcribe(speech_audio)
+
+        # Send transcription result
+        await websocket.send_json(
+            {
+                "type": MessageType.TRANSCRIPTION,
+                "text": transcript,
+                "metadata": metadata,
+                "timestamp": datetime.now().isoformat(),
+            }
+        )
+
+        # Skip LLM and TTS if transcription is empty
+        if not transcript.strip():
+            logger.info("Empty transcription, skipping LLM and TTS")
+
+            # Notify frontend that transcription occurred to let it reset
+            await websocket.send_json(
+                {
+                    "type": MessageType.TRANSCRIPTION,
+                    "text": transcript,
+                    "metadata": {},
+                    "timestamp": datetime.now().isoformat(),
+                }
+            )
+
+            # Still send TTS_END to fully reset UI
+            await websocket.send_json(
+                {
+                    "type": MessageType.TTS_END,
+                    "timestamp": datetime.now().isoformat(),
+                }
+            )
+            return
+
+        # Check if we have recent vision context to incorporate
+        has_vision_context = self.current_vision_context is not None
+
+        # Signal TTS start before LLM processing
+        await websocket.send_json(
+            {"type": MessageType.TTS_START, "timestamp": datetime.now().isoformat()}
+        )
+
+        await self._send_status(websocket, "generating_speech", {"streaming": True})
+
+        if has_vision_context:
+            logger.info("Processing speech with vision context")
+
+            # Add vision context to conversation history
+            self._add_vision_context_to_conversation(self.current_vision_context)
+
+            # Enhance user query with vision context reference
+            enhanced_transcript = f"{transcript} [Note: This question refers to the image I just analyzed.]"
+
+            # Stream LLM response with vision-aware context
+            await self._send_status(
+                websocket,
+                "processing_llm",
+                {"has_vision_context": True, "streaming": True},
+            )
+
+            # Use streaming response
+            full_response = ""
+            async for text_chunk in self._stream_llm_to_tts(
+                websocket, enhanced_transcript, self.system_prompt
+            ):
+                full_response += text_chunk
+
+            # Clear vision context after use
+            self.current_vision_context = None
+            logger.info("Vision context processed and cleared")
+        else:
+            # Normal non-vision processing with streaming
+            await self._send_status(websocket, "processing_llm", {"streaming": True})
+
+            # Use streaming response
+            full_response = ""
+            async for text_chunk in self._stream_llm_to_tts(
+                websocket, transcript, self.system_prompt
+            ):
+                full_response += text_chunk
+
+        # Send LLM response (complete) for display/history purposes
+        await websocket.send_json(
+            {
+                "type": MessageType.LLM_RESPONSE,
+                "text": full_response,
+                "metadata": {"streaming": True},
+                "timestamp": datetime.now().isoformat(),
+            }
+        )
+
+        # Signal TTS end
+        if not self.interrupt_playback.is_set():
+            await websocket.send_json(
+                {
+                    "type": MessageType.TTS_END,
+                    "timestamp": datetime.now().isoformat(),
+                }
+            )
 
     async def _send_tts_response(self, websocket: WebSocket, text: str):
         """
@@ -612,6 +681,9 @@ class WebSocketManager:
         Handle greeting request when user first clicks microphone.
         """
         try:
+            # DON'T reset interrupt flag at the start of greeting
+            # We need to preserve any existing interrupt signal
+
             # Check if user has conversation history
             has_history = len(self.llm_client.conversation_history) > 0
 
@@ -636,6 +708,11 @@ class WebSocketManager:
             # This ensures the LLM knows the user's name in subsequent interactions
             self._initialize_conversation_context()
 
+            # Check for interrupt before sending responses
+            if self.interrupt_playback.is_set():
+                logger.info("Greeting interrupted before sending response")
+                return
+
             # Send LLM response
             await websocket.send_json(
                 {
@@ -646,12 +723,14 @@ class WebSocketManager:
                 }
             )
 
-            # Generate and send TTS audio
+            # Generate and send TTS audio (this method already checks for interrupts)
             await self._send_tts_response(websocket, llm_response["text"])
 
         except Exception as e:
             logger.error(f"Error generating greeting: {e}")
             await self._send_error(websocket, f"Greeting error: {str(e)}")
+
+            # No need to reset interrupt flag here - let it persist if it was set
 
     async def _handle_silent_followup(self, websocket: WebSocket, tier: int):
         """
@@ -903,9 +982,36 @@ class WebSocketManager:
 
             elif message_type == "interrupt":
                 # Handle interrupt request
-                logger.info("Received interrupt request from client")
+                logger.info(
+                    "Received interrupt request from client - PRIORITY HANDLING"
+                )
+
+                # Force immediate interrupt of TTS
+                self.tts_client.interrupt_event.set()
+
+                # Also set our internal interrupt flag for other processes
                 self.interrupt_playback.set()
-                await self._send_status(websocket, "interrupted", {})
+
+                # Reset TTS client state
+                self.tts_client.is_processing = False
+
+                # Cancel any ongoing audio tasks
+                if self.current_audio_task and not self.current_audio_task.done():
+                    try:
+                        logger.info("Force cancelling current audio task")
+                        self.current_audio_task.cancel()
+                    except Exception as e:
+                        logger.error(f"Error cancelling audio task: {e}")
+
+                # Send interrupt confirmation back to client
+                await websocket.send_json(
+                    {
+                        "type": "interrupt_confirmed",
+                        "timestamp": datetime.now().isoformat(),
+                    }
+                )
+
+                logger.info("Interrupt processing completed")
 
             elif message_type == "clear_history":
                 # Clear conversation history
@@ -1368,15 +1474,20 @@ class WebSocketManager:
         buffer = ""
         sentence_end_chars = [".", "!", "?", ":", ";"]
         last_buffer_process_time = 0
+        tts_tasks = []
 
         try:
-            # Use the stream_response method we added to the LLMClient
+            # Check interrupt status before starting
+            if self.interrupt_playback.is_set():
+                logger.info("LLM streaming interrupted before starting")
+                return
+
             for text_chunk in self.llm_client.stream_response(
                 user_input, system_prompt
             ):
-                # Check if playback should be interrupted
+                # Check interrupt status IMMEDIATELY for each chunk
                 if self.interrupt_playback.is_set():
-                    logger.info("LLM streaming interrupted")
+                    logger.info("LLM streaming interrupted during chunk generation")
                     break
 
                 # Add chunk to buffer
@@ -1402,6 +1513,11 @@ class WebSocketManager:
                     # Absolute maximum to prevent excessive waits
                     len(buffer) >= 120
                 ) and time_since_last_process >= 0.3:  # 300ms minimum between TTS calls
+                    # Check interrupt status AGAIN before TTS processing
+                    if self.interrupt_playback.is_set():
+                        logger.info("LLM streaming interrupted before TTS processing")
+                        break
+
                     # Process the buffer through TTS
                     start_time = time.time()
                     audio_data = await self.tts_client.async_text_to_speech(buffer)
@@ -1409,6 +1525,11 @@ class WebSocketManager:
                     logger.info(
                         f"TTS processing time: {tts_time:.3f}s for {len(buffer)} chars"
                     )
+
+                    # Check interrupt status YET AGAIN before sending audio
+                    if self.interrupt_playback.is_set():
+                        logger.info("TTS generation interrupted before sending")
+                        break
 
                     # Encode and send the audio chunk
                     encoded_audio = base64.b64encode(audio_data).decode("utf-8")
@@ -1431,7 +1552,7 @@ class WebSocketManager:
                     # Clear buffer
                     buffer = ""
 
-            # Process any remaining text in buffer
+            # Final interrupt check before processing remaining buffer
             if buffer and not self.interrupt_playback.is_set():
                 start_time = time.time()
                 audio_data = await self.tts_client.async_text_to_speech(buffer)
@@ -1439,6 +1560,12 @@ class WebSocketManager:
                 logger.info(
                     f"TTS processing time: {tts_time:.3f}s for {len(buffer)} chars"
                 )
+
+                # Last interrupt check before sending final audio
+                if self.interrupt_playback.is_set():
+                    logger.info("Final TTS chunk interrupted before sending")
+                    return
+
                 encoded_audio = base64.b64encode(audio_data).decode("utf-8")
                 await websocket.send_json(
                     {
