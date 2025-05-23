@@ -245,7 +245,23 @@ class WebSocketManager:
             # Let whisper handle the WAV data directly - it can parse WAV headers
             audio_array = np.frombuffer(audio_data, dtype=np.uint8)
 
+            # Track if we're interrupting (for better audio handling)
+            was_interrupting = self.interrupt_playback.is_set()
+            was_tts_processing = self.tts_client.is_processing
+
+            # If in the middle of interruption, delay briefly to allow cleanup
+            if was_interrupting or was_tts_processing:
+                logger.info(
+                    "Detected interrupt in progress, adding small delay for cleanup..."
+                )
+                await asyncio.sleep(0.1)  # 100ms delay for cleanup
+                # Clear interrupt flag to allow new audio processing
+                self.interrupt_playback.clear()
+                self.tts_client.interrupt_event.clear()
+                self.tts_client.is_processing = False
+
             # First, clear any existing interrupt flags to prepare for new processing
+            # This creates a clean slate for new audio
             self.interrupt_playback.clear()
 
             # Interrupt any ongoing TTS playback
@@ -288,6 +304,11 @@ class WebSocketManager:
                     "interrupted",
                     {"tts_active": False, "ready_for_input": True},
                 )
+
+            # Log audio array shape for debugging
+            logger.info(
+                f"Received audio data: {len(audio_array)} bytes, processing now"
+            )
 
             # Create a new task for the current audio processing
             self.current_audio_task = asyncio.create_task(
@@ -986,6 +1007,10 @@ class WebSocketManager:
                     "Received interrupt request from client - PRIORITY HANDLING"
                 )
 
+                # Track pre-interrupt state to help with recovery
+                was_processing = self.is_processing
+                self.is_processing = False
+
                 # Force immediate interrupt of TTS
                 self.tts_client.interrupt_event.set()
 
@@ -995,7 +1020,7 @@ class WebSocketManager:
                 # Reset TTS client state
                 self.tts_client.is_processing = False
 
-                # Cancel any ongoing audio tasks
+                # Cancel any ongoing audio tasks but preserve their state for potential recovery
                 if self.current_audio_task and not self.current_audio_task.done():
                     try:
                         logger.info("Force cancelling current audio task")
@@ -1011,7 +1036,27 @@ class WebSocketManager:
                     }
                 )
 
-                logger.info("Interrupt processing completed")
+                # Explicitly signal TTS end to ensure frontend state is consistent
+                await websocket.send_json(
+                    {
+                        "type": MessageType.TTS_END,
+                        "timestamp": datetime.now().isoformat(),
+                    }
+                )
+
+                # Send ready status to prepare for immediate input after interrupt
+                await self._send_status(
+                    websocket,
+                    "interrupted",
+                    {"tts_active": False, "ready_for_input": True},
+                )
+
+                # Reset the interrupt flag after a very short delay
+                # This ensures we're ready to receive new audio immediately
+                await asyncio.sleep(0.05)  # 50ms delay
+                self.interrupt_playback.clear()
+
+                logger.info("Interrupt processing completed - ready for new input")
 
             elif message_type == "clear_history":
                 # Clear conversation history

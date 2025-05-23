@@ -168,15 +168,35 @@ export class AudioService {
    * Start recording audio
    */
   public async startRecording(): Promise<void> {
+    // If we're already recording, don't restart
     if (this.audioState === AudioState.RECORDING) {
       console.log('Already recording');
       return;
     }
+    
+    // If we're in the middle of an interruption, wait briefly for it to complete
+    if (this.audioState === AudioState.INTERRUPTED) {
+      console.log('Waiting for interrupt to complete before recording');
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    
+    // If we're still playing audio, force it to stop
+    if (this.isPlaying || this.isSpeaking || this.audioState === AudioState.PLAYING || this.audioState === AudioState.SPEAKING) {
+      console.log('Stopping playback before recording');
+      this.stopPlayback();
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
 
     try {
+      console.log('Initializing AudioContext...');
       await this.initAudioContext();
       
+      console.log('Setting recording state...');
+      // Clear buffer before starting to ensure we don't have stale audio
+      this.audioBuffer = [];
+      
       // Request microphone access
+      console.log('Requesting microphone access...');
       this.mediaStream = await navigator.mediaDevices.getUserMedia({
         audio: {
           sampleRate: this.config.sampleRate,
@@ -187,6 +207,8 @@ export class AudioService {
         }
       });
       
+      console.log('Microphone access granted.');
+      
       // Apply mute state if already set
       if (this.isMuted && this.mediaStream) {
         this.mediaStream.getAudioTracks().forEach(track => {
@@ -196,6 +218,7 @@ export class AudioService {
       
       // Create media stream source
       if (this.audioContext) {
+        console.log('Creating audio processing nodes...');
         this.mediaStreamSource = this.audioContext.createMediaStreamSource(this.mediaStream);
         
         // Create script processor for recording
@@ -206,33 +229,41 @@ export class AudioService {
         );
         
         // Connect nodes
+        console.log('Connecting audio nodes...');
         this.mediaStreamSource.connect(this.scriptProcessor);
         this.scriptProcessor.connect(this.audioContext.destination);
         
         // Handle audio processing
         this.scriptProcessor.onaudioprocess = this.handleAudioProcess.bind(this);
         
-        // Clear previous buffer
-        this.audioBuffer = [];
-        
-        // Set state
-        this.audioState = AudioState.RECORDING;
-        
         // Reset voice detection state
         this.isVoiceDetected = false;
         this.lastVoiceTime = 0;
         
+        // Use lower voice detection threshold at start for better sensitivity
+        const originalThreshold = this.voiceThreshold;
+        this.voiceThreshold = this.interruptThreshold; // Use more sensitive threshold initially
+        
+        // After a short period, reset to normal threshold
+        setTimeout(() => {
+          this.voiceThreshold = originalThreshold;
+        }, 1000); // 1 second of increased sensitivity
+        
+        // NOW set state to recording AFTER everything is connected
+        this.audioState = AudioState.RECORDING;
+        
         // Log voice detection threshold
-        console.log(`Voice detection enabled with threshold: ${this.voiceThreshold}`);
+        console.log(`Voice detection enabled with initial threshold: ${this.voiceThreshold} (temporary: ${this.interruptThreshold})`);
         
         // Dispatch event
         this.dispatchEvent(AudioEvent.RECORDING_START, {});
         
-        console.log('Recording started');
+        console.log('Recording started successfully');
       }
     } catch (error) {
       console.error('Error starting recording:', error);
       this.dispatchEvent(AudioEvent.AUDIO_ERROR, { error });
+      this.audioState = AudioState.INACTIVE; // Ensure we reset state on error
       this.stopRecording();
       throw error;
     }
@@ -677,6 +708,9 @@ export class AudioService {
   private _forceInterrupt(): void {
     console.log('FORCING IMMEDIATE INTERRUPT');
     
+    // IMPORTANT: Save current state before interrupting
+    const wasRecording = this.audioState === AudioState.RECORDING;
+    
     // Force state to interrupted immediately
     this.audioState = AudioState.INTERRUPTED;
     
@@ -720,15 +754,19 @@ export class AudioService {
       force: true
     });
     
-    // Reset to inactive state after brief delay
+    // IMPORTANT: To ensure proper state flow, we no longer auto-start recording here.
+    // Instead, we reset to INACTIVE more quickly to allow the UI to start recording naturally
+    
+    // Reset to inactive state after a very brief delay
     setTimeout(() => {
       if (this.audioState === AudioState.INTERRUPTED) {
         this.audioState = AudioState.INACTIVE;
+        console.log('Reset audio state to INACTIVE after interruption');
         this.dispatchEvent(AudioEvent.AUDIO_STATE_CHANGE, { 
           state: this.audioState 
         });
       }
-    }, 200);
+    }, 100); // Shorter delay for quicker recovery
   }
 
   /**

@@ -17,7 +17,8 @@ from . import config
 from .services.transcription import WhisperTranscriber
 from .services.llm import LLMClient
 from .services.tts import TTSClient
-from .services.vision import vision_service
+
+# from .services.vision import vision_service
 
 # Import routes
 from .routes.websocket import websocket_endpoint
@@ -65,12 +66,12 @@ async def lifespan(app: FastAPI):
         output_format=cfg["tts_format"],
     )
 
-    # Initialize vision service only if enabled in config
-    if cfg["enable_vision_model"]:
-        logger.info("Initializing vision service...")
-        vision_service.initialize()
-    else:
-        logger.info("Vision service disabled in configuration, skipping initialization")
+    # # Initialize vision service only if enabled in config
+    # if cfg["enable_vision_model"]:
+    #     logger.info("Initializing vision service...")
+    #     vision_service.initialize()
+    # else:
+    #     logger.info("Vision service disabled in configuration, skipping initialization")
 
     logger.info("All services initialized successfully")
 
@@ -132,15 +133,15 @@ async def health_check():
             "transcription": transcription_service is not None,
             "llm": llm_service is not None,
             "tts": tts_service is not None,
-            "vision": (
-                vision_service.is_ready() if config.ENABLE_VISION_MODEL else "disabled"
-            ),
+            # "vision": (
+            #    vision_service.is_ready() if config.ENABLE_VISION_MODEL else "disabled"
+            # ),
         },
         "config": {
             "whisper_model": config.WHISPER_MODEL,
             "tts_voice": config.TTS_VOICE,
             "websocket_port": config.WEBSOCKET_PORT,
-            "vision_enabled": config.ENABLE_VISION_MODEL,
+            # "vision_enabled": config.ENABLE_VISION_MODEL,
         },
     }
 

@@ -287,7 +287,7 @@ const ChatInterface: React.FC = () => {
     // Handle raw audio data for early voice detection
     const handleAudioData = (data: any) => {
       // Lower threshold specifically for interrupting ongoing speech
-      const interruptThreshold = 0.015; // Very sensitive threshold when speaking
+      const interruptThreshold = 0.012; // Extra sensitive threshold when speaking
       
       // Check if we need to interrupt ongoing speech immediately
       if ((assistantState === 'speaking' || audioService.getAudioState() === AudioState.SPEAKING) && 
@@ -297,14 +297,44 @@ const ChatInterface: React.FC = () => {
         
         console.log(`Speech interrupt triggered: energy=${data.energy.toFixed(4)}, threshold=${interruptThreshold}`);
         
+        // Keep track of initial speech detection time
+        const interruptDetectionTime = Date.now();
+        
         // Immediate stop of audio playback
         audioService.stopPlayback();
         
-        // Force interrupt signal
+        // Force interrupt signal with retry
         websocketService.interrupt();
+        setTimeout(() => websocketService.interrupt(), 50);
         
         // Show listening UI immediately without waiting for VAD
         setAssistantState('listening');
+        
+        // Start recording explicitly after a brief delay to ensure system is ready
+        setTimeout(() => {
+          // Double check state before starting
+          if (assistantState === 'listening' && audioService.getAudioState() === AudioState.INACTIVE) {
+            console.log('Starting recording explicitly after interrupt');
+            audioService.startRecording().catch(e => 
+              console.error('Failed to start recording after interrupt:', e)
+            );
+          }
+        }, 150); // Small delay to allow interrupt to complete
+        
+        // Preemptively start a timeout to eventually return to idle if no transcription arrives
+        // This prevents getting stuck in listening state if the interrupt speech was too brief
+        const safetyTimeout = setTimeout(() => {
+          const timeElapsed = Date.now() - interruptDetectionTime;
+          // Only reset if we've been in listening state for a while with no transcription
+          if (assistantState === 'listening' && timeElapsed > 5000) {
+            console.log('Interrupt speech timeout exceeded - no transcription detected');
+            // Try to stop recording and reset state to ensure proper cleanup
+            audioService.stopRecording();
+            setAssistantState('idle');
+          }
+        }, 5000);
+        
+        return () => clearTimeout(safetyTimeout);
       }
 
       // Two-tier threshold approach:
@@ -324,15 +354,41 @@ const ChatInterface: React.FC = () => {
           setPotentialSpeechActivity(false);
         }, 1500);
         
-        console.log(`Audio energy detected: ${data.energy.toFixed(4)}, potential speech = true`);
+        // Only log if substantial audio detected
+        if (data.energy > 0.01) {
+          console.log(`Audio energy detected: ${data.energy.toFixed(4)}, potential speech = true`);
+        }
       }
       
-      // 2. HIGHER threshold for actual speech - shows listening UI
-      //    This uses the VAD's more strict threshold (0.01)
+      // 2. HIGHER threshold for actual speech - shows listening UI 
       if (data.isVoice) {
         // Check if call is active - if not, ignore voice completely
         if (!callActive) {
           console.log(`Voice detected but call is not active, ignoring (energy: ${data.energy.toFixed(4)})`);
+          return;
+        }
+        
+        // Check if we're in speaking state - if so, always treat as interrupt 
+        // regardless of protected states to ensure we never lose first words
+        if (assistantState === 'speaking') {
+          console.log(`Voice detected during speaking, triggering interrupt`);
+          audioService.stopPlayback();
+          websocketService.interrupt();
+          
+          // Set to listening state
+          setAssistantState('listening');
+          
+          // After a short delay, explicitly start recording if not already recording
+          setTimeout(() => {
+            const currentState = audioService.getAudioState();
+            if (currentState !== AudioState.RECORDING) {
+              console.log(`Explicitly starting recording in speaking interrupt handler, current state: ${currentState}`);
+              audioService.startRecording().catch(e =>
+                console.error('Failed to start recording after speaking interrupt:', e)
+              );
+            }
+          }, 150);
+          
           return;
         }
         
@@ -341,16 +397,38 @@ const ChatInterface: React.FC = () => {
           // Only log without changing state - effectively ignoring voice detection
           console.log(`Voice detected during ${assistantState} state (energy: ${data.energy.toFixed(4)}), ignoring`);
         } 
-        // For all other states (idle, speaking), use normal sensitivity
-        else if (assistantState === 'idle' || assistantState === 'speaking') {
+        // For idle state, start listening
+        else if (assistantState === 'idle') {
           console.log(`Voice detected (VAD), energy: ${data.energy.toFixed(4)}, changing state to listening`);
           setAssistantState('listening');
+          
+          // Explicitly check if recording hasn't started and start it
+          setTimeout(() => {
+            const currentState = audioService.getAudioState();
+            if (currentState !== AudioState.RECORDING) {
+              console.log(`Starting recording explicitly in idle->listening transition, current state: ${currentState}`);
+              audioService.startRecording().catch(e =>
+                console.error('Failed to start recording in idle transition:', e)
+              );
+            }
+          }, 50);
         }
         // Special handling for vision_asr state
         else if (assistantState === 'vision_asr') {
           console.log(`Voice detected during vision_asr state (energy: ${data.energy.toFixed(4)}), already in vision-aware listening`);
           // Stay in vision_asr state - it's already the correct visual state for vision context
           // No state change needed
+          
+          // However, ensure recording is active
+          setTimeout(() => {
+            const currentState = audioService.getAudioState();
+            if (currentState !== AudioState.RECORDING) {
+              console.log(`Starting recording explicitly in vision_asr state, current state: ${currentState}`);
+              audioService.startRecording().catch(e =>
+                console.error('Failed to start recording in vision_asr state:', e)
+              );
+            }
+          }, 50);
         }
       }
     };
