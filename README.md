@@ -115,6 +115,43 @@ If you prefer to set up the project manually, follow these steps:
    python -m backend.main
    ```
 
+## Running with Docker
+
+You can run the entire Vocalis application (FastAPI backend and Gradio frontend) using Docker and Docker Compose for a consistent and isolated environment.
+
+**Prerequisites:**
+*   Docker installed and running.
+*   Docker Compose installed.
+
+**Configuration:**
+1.  **Backend Environment:** Before building, ensure your backend environment variables are configured. Copy `backend/.env.example` to `backend/.env` and customize it with your API keys, model preferences, etc., as needed. This `.env` file is used by the `docker-compose.yaml` for the backend service.
+
+**Build and Run:**
+1.  Navigate to the root directory of the cloned repository.
+2.  Run the following command to build the Docker images and start the services:
+    ```bash
+    docker-compose up --build
+    ```
+    This command will:
+    *   Build the Docker image for the backend service (using `backend/Dockerfile`).
+    *   Build the Docker image for the Gradio frontend service (using `Dockerfile.gradio`).
+    *   Start both services. You'll see logs from both services in your terminal.
+
+**Accessing the Services:**
+*   **Gradio UI:** Once the services are running, open your web browser and go to `http://localhost:7860`.
+*   **Backend API (Optional):** The FastAPI backend will be accessible at `http://localhost:8000`.
+
+**Stopping the Application:**
+*   To stop the services, press `Ctrl+C` in the terminal where `docker-compose up` is running.
+*   To remove the containers (and networks, if you want a clean stop), run:
+    ```bash
+    docker-compose down
+    ```
+
+**Notes:**
+*   The first build might take some time as it downloads Python base images and installs dependencies. Subsequent builds will be faster due to Docker's caching.
+*   If you make changes to the backend or Gradio code, you'll need to rebuild the images (e.g., `docker-compose up --build` again). For development, you can uncomment the `volumes` sections in `docker-compose.yaml` for live code reloading, but this is generally not recommended for "production" Docker usage.
+
 ## Running with Gradio UI
 
 ### Using Colab Notebook

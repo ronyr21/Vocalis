@@ -8,7 +8,7 @@ import tempfile
 import time
 
 # --- Configuration ---
-FASTAPI_WS_URL = "ws://localhost:8000/ws" # Make sure this matches your FastAPI backend
+FASTAPI_WS_URL = os.getenv("FASTAPI_WS_URL", "ws://localhost:8000/ws") # Make sure this matches your FastAPI backend
 
 # Global WebSocket connection state
 websocket_client = None
