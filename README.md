@@ -115,8 +115,9 @@ If you prefer to set up the project manually, follow these steps:
    python -m backend.main
    ```
 
-## Running with Gradio UI (via Colab)
+## Running with Gradio UI
 
+### Using Colab Notebook
 A Gradio-based user interface is available to interact with the Vocalis backend. The easiest way to run this is using the provided Google Colab notebook, which handles setup and launching.
 
 **Notebook:** `Vocalis_Gradio_Colab.ipynb`
@@ -135,6 +136,38 @@ A Gradio-based user interface is available to interact with the Vocalis backend.
 **Note:**
 *   The backend server (Step 3 cell) will continue to run and show logs. You'll need to keep this cell running while using the Gradio UI.
 *   To stop the application, interrupt the execution of the cells in Colab (usually via the "Runtime" menu or by stopping individual cells).
+
+### Running Locally
+
+You can also run the Gradio interface on your local machine:
+
+1.  **Prerequisites:**
+    *   Ensure Python 3.8+ is installed.
+    *   You have cloned this repository.
+    *   You have set up your Python environment for the backend (e.g., created a virtual environment and activated it).
+
+2.  **Install Dependencies:**
+    If you haven't already, install the backend requirements and Gradio:
+    ```bash
+    pip install -r backend/requirements.txt
+    pip install gradio websockets
+    ```
+
+3.  **Start the FastAPI Backend:**
+    Open a terminal, navigate to the repository's root directory, and run:
+    ```bash
+    python -m backend.main
+    ```
+    Keep this terminal running.
+
+4.  **Run the Gradio Application:**
+    Open a *new* terminal, navigate to the repository's root directory, and run:
+    ```bash
+    python gradio_app.py
+    ```
+
+5.  **Access the UI:**
+    Gradio will provide a local URL in the terminal, typically `http://127.0.0.1:7860`. Open this URL in your web browser to use the application.
 
 ## External Services
 
