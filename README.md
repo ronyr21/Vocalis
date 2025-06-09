@@ -115,6 +115,27 @@ If you prefer to set up the project manually, follow these steps:
    python -m backend.main
    ```
 
+## Running with Gradio UI (via Colab)
+
+A Gradio-based user interface is available to interact with the Vocalis backend. The easiest way to run this is using the provided Google Colab notebook, which handles setup and launching.
+
+**Notebook:** `Vocalis_Gradio_Colab.ipynb`
+
+**Steps to use the Colab Notebook:**
+
+1.  **Open the Notebook:** Upload and open `Vocalis_Gradio_Colab.ipynb` in Google Colaboratory.
+2.  **Update Repository URL (Important):** In the first code cell (Step 1), you **must** replace the placeholder `https://github.com/your-repo-url/Vocalis.git` with the actual URL of this GitHub repository.
+3.  **Run the Cells:** Execute the notebook cells sequentially:
+    *   **Step 1: Clone the Repository:** Clones the project into your Colab environment.
+    *   **Step 2: Install Dependencies:** Installs requirements for the backend and Gradio.
+    *   **Step 3: Launch the FastAPI Backend:** Starts the backend server. Wait for confirmation that it's running.
+    *   **Step 4: Launch the Gradio Frontend:** Starts the Gradio app and provides a URL to access the UI. Click this URL.
+4.  **Interact:** Use the Gradio interface to speak or type messages and hear/see the AI's responses.
+
+**Note:**
+*   The backend server (Step 3 cell) will continue to run and show logs. You'll need to keep this cell running while using the Gradio UI.
+*   To stop the application, interrupt the execution of the cells in Colab (usually via the "Runtime" menu or by stopping individual cells).
+
 ## External Services
 
 Vocalis is designed to work with OpenAI-compatible API endpoints for both LLM and TTS services:
