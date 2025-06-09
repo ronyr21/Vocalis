@@ -3,11 +3,6 @@
 
 echo "=== Setting up Vocalis project ==="
 
-echo "=== Setting up frontend ==="
-cd frontend
-npm install
-cd ..
-
 echo "=== Setting up backend environment ==="
 python3 -m venv env
 source ./env/bin/activate

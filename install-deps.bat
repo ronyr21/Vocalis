@@ -1,11 +1,6 @@
 @echo off
 echo === Updating Vocalis dependencies ===
 
-echo === Updating frontend dependencies ===
-cd frontend
-call npm install
-cd ..
-
 echo === Updating backend dependencies ===
 call .\env\Scripts\activate
 
