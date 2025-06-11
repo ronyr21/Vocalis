@@ -1151,6 +1151,44 @@ class WebSocketManager:
                 enabled = message.get("enabled", False)
                 await self.handle_toggle_streaming(websocket, enabled)
 
+            elif message_type == "text_message": # New handler
+                text_input = message.get("text", "")
+                if text_input:
+                    # Directly process this text through LLM and TTS
+                    logger.info(f"Handling direct text message: {text_input}")
+
+                    # Signal TTS start before LLM processing
+                    await websocket.send_json(
+                        {"type": MessageType.TTS_START, "timestamp": datetime.now().isoformat()}
+                    )
+                    await self._send_status(websocket, "processing_llm_text_input", {"streaming": True})
+
+                    full_llm_response = ""
+                    # Ensure _stream_llm_to_tts is available or adapt this call
+                    async for text_chunk in self._stream_llm_to_tts(
+                        websocket, text_input, self.system_prompt
+                    ):
+                        full_llm_response += text_chunk
+
+                    await websocket.send_json(
+                        {
+                            "type": MessageType.LLM_RESPONSE,
+                            "text": full_llm_response,
+                            "metadata": {"streaming": True, "input_type": "text"},
+                            "timestamp": datetime.now().isoformat(),
+                        }
+                    )
+
+                    if not self.interrupt_playback.is_set():
+                        await websocket.send_json(
+                            {
+                                "type": MessageType.TTS_END,
+                                "timestamp": datetime.now().isoformat(),
+                            }
+                        )
+                else:
+                    await self._send_error(websocket, "Empty text message received")
+
             else:
                 logger.warning(f"Unknown message type: {message_type}")
                 await self._send_error(

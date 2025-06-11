@@ -1,11 +1,6 @@
 @echo off
 echo === Setting up Vocalis project ===
 
-echo === Setting up frontend ===
-cd frontend
-call npm install
-cd ..
-
 echo === Setting up backend environment ===
 python -m venv env
 call .\env\Scripts\activate

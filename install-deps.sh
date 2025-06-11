@@ -3,11 +3,6 @@
 
 echo "=== Updating Vocalis dependencies ==="
 
-echo "=== Updating frontend dependencies ==="
-cd frontend
-npm install
-cd ..
-
 echo "=== Updating backend dependencies ==="
 source ./env/bin/activate
 
